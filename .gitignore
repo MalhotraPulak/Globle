@@ -1,0 +1,34 @@
+# Build outputs
+web_build/
+main
+a.out
+*.o
+
+# Debug and test executables
+debug_*
+test_*
+check_*
+inspect_*
+find_large
+
+# Logs
+*.log
+game*.log
+
+# Backup files
+*.backup
+
+# System files
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Documentation (generated)
+*.md
+!README.md
+!CLAUDE.md
+
+# Compiled raylib
+raylib/src/*.a
+raylib/src/*.o

@@ -1,0 +1,94 @@
+name: Build and Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup Emscripten
+      uses: mymindstorm/setup-emsdk@v14
+      with:
+        version: 4.0.20
+        actions-cache-folder: 'emsdk-cache'
+
+    - name: Verify Emscripten installation
+      run: |
+        emcc --version
+        which emcc
+
+    - name: Clone Raylib if not present
+      run: |
+        if [ ! -d "raylib" ]; then
+          echo "Cloning Raylib..."
+          git clone --depth 1 https://github.com/raysan5/raylib.git
+        else
+          echo "Raylib already present"
+        fi
+
+    - name: Build Raylib for Web
+      run: |
+        cd raylib/src
+        make PLATFORM=PLATFORM_WEB -B
+        ls -lh libraylib.web.a
+        cd ../..
+
+    - name: Build Globle for Web
+      run: |
+        mkdir -p web_build
+        emcc -o web_build/index.html \
+          main.c geodata.c game.c \
+          -Os -Wall \
+          -I"raylib/src" \
+          -L"raylib/src" \
+          "raylib/src/libraylib.web.a" \
+          -s USE_GLFW=3 \
+          -s ASYNCIFY \
+          -s ASYNCIFY_STACK_SIZE=81920 \
+          -s INITIAL_MEMORY=256MB \
+          -s TOTAL_STACK=64MB \
+          -s FORCE_FILESYSTEM=1 \
+          -s ALLOW_MEMORY_GROWTH=1 \
+          --preload-file coordinates \
+          --preload-file earth2.jpg \
+          --shell-file "raylib/src/minshell.html" \
+          -DPLATFORM_WEB
+
+    - name: List build output
+      run: |
+        echo "Build artifacts:"
+        ls -lh web_build/
+
+    - name: Upload artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: './web_build'
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
