@@ -198,6 +198,9 @@ void initGame(GameState *game, CountryDatabase *db) {
   game->searchTextLength = 0;
   game->searchActive = false;
   game->currentDistanceMode = DISTANCE_MODE_BORDER_TO_BORDER;  // Default to border-to-border mode
+  game->startTime = 0.0;
+  game->elapsedTime = 0.0;
+  game->finalScore = 0;
   memset(game->searchText, 0, sizeof(game->searchText));
   memset(game->guesses, 0, sizeof(game->guesses));
 }
@@ -297,4 +300,54 @@ bool makeGuess(GameState *game, CountryData *country) {
   }
 
   return true;
+}
+
+// Calculate final score based on guesses, distance, and time
+// Higher score is better (max 10000 points)
+int calculateScore(GameState *game) {
+  if (!game->won || game->guessCount == 0) {
+    return 0;
+  }
+
+  // Base score starts at 10000
+  int score = 10000;
+
+  // Penalty for number of guesses (1-50 guesses)
+  // Perfect (1 guess) = 0 penalty, 50+ guesses = -5000
+  int guessPenalty = (game->guessCount - 1) * 100;
+  if (guessPenalty > 5000) guessPenalty = 5000;
+  score -= guessPenalty;
+
+  // Penalty for time (0-600 seconds = 0-10 minutes)
+  // Fast (<60s) = 0 penalty, slow (>600s) = -3000
+  int timePenalty = 0;
+  if (game->elapsedTime > 60.0) {
+    timePenalty = (int)((game->elapsedTime - 60.0) * 5.0);
+    if (timePenalty > 3000) timePenalty = 3000;
+  }
+  score -= timePenalty;
+
+  // Penalty for average distance of guesses
+  // Calculate average distance (excluding correct guess with 0 distance)
+  float totalDistance = 0.0f;
+  int countedGuesses = 0;
+  for (int i = 0; i < game->guessCount; i++) {
+    if (game->guesses[i].distance > 1.0f) {  // Skip the correct guess
+      totalDistance += game->guesses[i].distance;
+      countedGuesses++;
+    }
+  }
+
+  if (countedGuesses > 0) {
+    float avgDistance = totalDistance / countedGuesses;
+    // Close guesses (<1000km avg) = 0 penalty, far (>10000km avg) = -2000
+    int distancePenalty = (int)(avgDistance / 5.0f);
+    if (distancePenalty > 2000) distancePenalty = 2000;
+    score -= distancePenalty;
+  }
+
+  // Ensure score doesn't go negative
+  if (score < 0) score = 0;
+
+  return score;
 }

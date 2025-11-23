@@ -34,6 +34,9 @@ typedef struct {
   int searchTextLength;
   bool searchActive;
   DistanceMode currentDistanceMode;  // Current distance calculation mode
+  double startTime;      // Game start time (seconds since epoch)
+  double elapsedTime;    // Time when game was won (seconds)
+  int finalScore;        // Score based on guesses, distance, and time
 } GameState;
 
 // Distance calculation (haversine formula)
@@ -51,5 +54,6 @@ void selectRandomMysteryCountry(GameState *game);
 bool makeGuess(GameState *game, CountryData *country);
 bool hasGuessed(GameState *game, CountryData *country);
 void updateClosestGuess(GameState *game);
+int calculateScore(GameState *game);
 
 #endif // GAME_H

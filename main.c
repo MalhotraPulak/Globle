@@ -49,47 +49,209 @@ Vector3 latLonToSphereScaled(float lat, float lon, GeoPoint centroid,
   return Vector3Add(centroid3D, offset);
 }
 
-// Draw a country's polygon on the sphere (filled with triangles)
+// Ear clipping triangulation helpers
+// Check if three consecutive vertices form a convex angle (left turn in 2D)
+bool isConvexVertex(GeoPoint *prev, GeoPoint *curr, GeoPoint *next) {
+  // Use cross product to determine if we have a left turn (convex)
+  // Cross product: (curr - prev) × (next - curr)
+  float dx1 = curr->lon - prev->lon;
+  float dy1 = curr->lat - prev->lat;
+  float dx2 = next->lon - curr->lon;
+  float dy2 = next->lat - curr->lat;
+
+  float cross = dx1 * dy2 - dy1 * dx2;
+  return cross > 0; // Positive cross product means counter-clockwise (convex)
+}
+
+// Check if point P is inside triangle ABC using barycentric coordinates
+bool pointInTriangle(GeoPoint *p, GeoPoint *a, GeoPoint *b, GeoPoint *c) {
+  // Compute barycentric coordinates
+  float denominator = ((b->lat - c->lat) * (a->lon - c->lon) +
+                       (c->lon - b->lon) * (a->lat - c->lat));
+
+  if (fabsf(denominator) < 0.0000001f) {
+    return false; // Degenerate triangle
+  }
+
+  float u = ((b->lat - c->lat) * (p->lon - c->lon) +
+             (c->lon - b->lon) * (p->lat - c->lat)) / denominator;
+  float v = ((c->lat - a->lat) * (p->lon - c->lon) +
+             (a->lon - c->lon) * (p->lat - c->lat)) / denominator;
+  float w = 1.0f - u - v;
+
+  // Point is inside if all barycentric coordinates are non-negative
+  return (u >= 0) && (v >= 0) && (w >= 0);
+}
+
+// Check if a vertex forms a valid "ear" that can be clipped
+bool isEar(GeoPoint *points, int count, int prev, int curr, int next,
+           bool *active) {
+  GeoPoint *p1 = &points[prev];
+  GeoPoint *p2 = &points[curr];
+  GeoPoint *p3 = &points[next];
+
+  // Must be a convex vertex
+  if (!isConvexVertex(p1, p2, p3)) {
+    return false;
+  }
+
+  // Check that no other vertices are inside this triangle
+  for (int i = 0; i < count; i++) {
+    if (!active[i] || i == prev || i == curr || i == next) {
+      continue;
+    }
+
+    if (pointInTriangle(&points[i], p1, p2, p3)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// Ear clipping triangulation
+// Returns triangle indices (3 per triangle)
+typedef struct {
+  int *indices;
+  int count; // Number of indices (triangles * 3)
+} TriangleList;
+
+TriangleList earClipTriangulate(GeoPoint *points, int count) {
+  TriangleList result = {NULL, 0};
+
+  if (count < 3) {
+    return result;
+  }
+
+  // Allocate max possible triangles (n-2 triangles, 3 indices each)
+  result.indices = (int *)malloc((count - 2) * 3 * sizeof(int));
+  if (!result.indices) {
+    return result;
+  }
+
+  // Track which vertices are still active (not yet clipped)
+  bool *active = (bool *)malloc(count * sizeof(bool));
+  if (!active) {
+    free(result.indices);
+    result.indices = NULL;
+    return result;
+  }
+
+  for (int i = 0; i < count; i++) {
+    active[i] = true;
+  }
+
+  int remainingVertices = count;
+  int current = 0;
+  int iterations = 0;
+  const int maxIterations = count * count; // Prevent infinite loops
+
+  while (remainingVertices > 3 && iterations < maxIterations) {
+    iterations++;
+
+    // Find next active vertex
+    while (!active[current]) {
+      current = (current + 1) % count;
+    }
+
+    // Find previous and next active vertices
+    int prev = current;
+    do {
+      prev = (prev - 1 + count) % count;
+    } while (!active[prev]);
+
+    int next = current;
+    do {
+      next = (next + 1) % count;
+    } while (!active[next]);
+
+    // Check if current vertex is an ear
+    if (isEar(points, count, prev, current, next, active)) {
+      // Add triangle
+      result.indices[result.count++] = prev;
+      result.indices[result.count++] = current;
+      result.indices[result.count++] = next;
+
+      // Remove current vertex
+      active[current] = false;
+      remainingVertices--;
+
+      // Move to next vertex
+      current = next;
+    } else {
+      // Try next vertex
+      current = next;
+    }
+  }
+
+  // Add final triangle from remaining 3 vertices
+  if (remainingVertices == 3) {
+    int remaining[3];
+    int idx = 0;
+    for (int i = 0; i < count && idx < 3; i++) {
+      if (active[i]) {
+        remaining[idx++] = i;
+      }
+    }
+
+    if (idx == 3) {
+      result.indices[result.count++] = remaining[0];
+      result.indices[result.count++] = remaining[1];
+      result.indices[result.count++] = remaining[2];
+    }
+  }
+
+  free(active);
+  return result;
+}
+
+// Draw a country's polygon on the sphere (filled with triangles using ear clipping)
 void drawCountryPolygonFilled(Polygon *poly, GeoPoint countryCenter,
                                float radius, float scaleFactor, Color color) {
   if (!poly || poly->points->size < 3) {
     return;
   }
 
-  // Use immediate mode rendering for better control
+  // Convert vec of GeoPoints to array for ear clipping
+  int pointCount = (int)poly->points->size;
+  GeoPoint *points = (GeoPoint *)poly->points->p;
+
+  // Triangulate the polygon
+  TriangleList triangles = earClipTriangulate(points, pointCount);
+
+  if (triangles.indices == NULL || triangles.count == 0) {
+    return;
+  }
+
+  // Render triangles using immediate mode
   rlBegin(RL_TRIANGLES);
   rlColor4ub(color.r, color.g, color.b, color.a);
 
-  // Calculate center point for triangle fan
-  float centerLat = 0.0f;
-  float centerLon = 0.0f;
-  for (uint64_t i = 0; i < poly->points->size; i++) {
-    GeoPoint *p = (GeoPoint *)poly->points->p + i;
-    centerLat += p->lat;
-    centerLon += p->lon;
-  }
-  centerLat /= poly->points->size;
-  centerLon /= poly->points->size;
-  Vector3 center =
-      latLonToSphereScaled(centerLat, centerLon, countryCenter, radius, scaleFactor);
+  for (int i = 0; i < triangles.count; i += 3) {
+    int idx0 = triangles.indices[i];
+    int idx1 = triangles.indices[i + 1];
+    int idx2 = triangles.indices[i + 2];
 
-  // Draw triangles using fan triangulation with scaled coordinates
-  for (uint64_t i = 0; i < poly->points->size; i++) {
-    GeoPoint *p1 = (GeoPoint *)poly->points->p + i;
-    GeoPoint *p2 = (GeoPoint *)poly->points->p + ((i + 1) % poly->points->size);
+    GeoPoint *p0 = &points[idx0];
+    GeoPoint *p1 = &points[idx1];
+    GeoPoint *p2 = &points[idx2];
 
-    Vector3 v1 =
-        latLonToSphereScaled(p1->lat, p1->lon, countryCenter, radius, scaleFactor);
-    Vector3 v2 =
-        latLonToSphereScaled(p2->lat, p2->lon, countryCenter, radius, scaleFactor);
+    Vector3 v0 = latLonToSphereScaled(p0->lat, p0->lon, countryCenter,
+                                      radius, scaleFactor);
+    Vector3 v1 = latLonToSphereScaled(p1->lat, p1->lon, countryCenter,
+                                      radius, scaleFactor);
+    Vector3 v2 = latLonToSphereScaled(p2->lat, p2->lon, countryCenter,
+                                      radius, scaleFactor);
 
-    // Draw triangle: center -> v1 -> v2
-    rlVertex3f(center.x, center.y, center.z);
+    rlVertex3f(v0.x, v0.y, v0.z);
     rlVertex3f(v1.x, v1.y, v1.z);
     rlVertex3f(v2.x, v2.y, v2.z);
   }
 
   rlEnd();
+
+  // Clean up
+  free(triangles.indices);
 }
 
 // Draw a country's polygon on the sphere (outline only)
@@ -204,7 +366,8 @@ int main(void) {
 
   // Setup 3D camera
   Camera3D camera = {0};
-  camera.position = (Vector3){-5.0f, 0.0f, 0.0f};
+  float cameraDistance = 5.0f;  // Initial zoom distance
+  camera.position = (Vector3){-cameraDistance, 0.0f, 0.0f};
   camera.target = (Vector3){0.0f, 0.0f, 0.0f};
   camera.up = (Vector3){0.0f, 1.0f, 0.0f};
   camera.fovy = 45.0f;
@@ -246,6 +409,15 @@ int main(void) {
     // Auto-rotation always increments (in local space)
     autoSpin += 0.001f;
 
+    // Mouse wheel zoom (works with trackpad pinch on macOS)
+    float wheelMove = GetMouseWheelMove();
+    if (wheelMove != 0) {
+      cameraDistance -= wheelMove * 0.5f;  // Zoom in/out
+      // Clamp camera distance (min 2.0, max 10.0)
+      if (cameraDistance < 2.0f) cameraDistance = 2.0f;
+      if (cameraDistance > 10.0f) cameraDistance = 10.0f;
+    }
+
     // Mouse drag rotation
     if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
       Vector2 mouseDelta = GetMouseDelta();
@@ -270,6 +442,7 @@ int main(void) {
         game.currentDistanceMode = (DistanceMode)selectedMode;
         modeSelectionActive = false;
         selectRandomMysteryCountry(&game);  // Select mystery country after mode choice
+        game.startTime = GetTime();  // Start the timer
         const char *modeNames[] = {"Centroid", "Border-to-Border"};
         printf("Distance mode selected: %s\n", modeNames[game.currentDistanceMode]);
       }
@@ -322,6 +495,13 @@ int main(void) {
       // Select country
       if (IsKeyPressed(KEY_ENTER) && searchResultCount > 0) {
         makeGuess(&game, searchResults[selectedSearchResult]);
+
+        // If game was won, calculate score
+        if (game.won && game.finalScore == 0) {
+          game.elapsedTime = GetTime() - game.startTime;
+          game.finalScore = calculateScore(&game);
+        }
+
         game.searchActive = false;
         game.searchTextLength = 0;
         game.searchText[0] = '\0';
@@ -349,6 +529,9 @@ int main(void) {
     BeginDrawing();
     ClearBackground(RAYWHITE);
 
+    // Update camera position based on zoom
+    camera.position = (Vector3){-cameraDistance, 0.0f, 0.0f};
+
     // Draw 3D globe
     BeginMode3D(camera);
 
@@ -372,8 +555,8 @@ int main(void) {
 
     // Draw guessed countries (only if game is started)
     if (!modeSelectionActive && game.mysteryCountry != NULL) {
-      // Disable depth test temporarily so countries always render on top
-      rlDisableDepthTest();
+      // Keep depth test enabled so countries on back side are hidden
+      // rlDisableDepthTest();
 
       for (int i = 0; i < game.guessCount; i++) {
       Color drawColor = game.guesses[i].color;
@@ -387,18 +570,34 @@ int main(void) {
 
       CountryData *country = game.guesses[i].country;
 
-      // Draw multiple outline layers to make country borders visible
-      // Flattened to sit closer to the Earth's surface
-      // This approach works correctly for both single polygons and multipolygons
-      // (e.g., India with mainland + islands)
-      for (int j = 0; j < 12; j++) {
+      // TODO: Re-enable filled rendering with optimized triangulation
+      // For now, using only outlines for performance
+      // Color fillColor = drawColor;
+      // fillColor.a = 160;
+      // drawCountryFilled(country, GLOBE_RADIUS, COUNTRY_SCALE_FACTOR, fillColor);
+
+      // Draw multiple outline layers with gradient effect
+      // Using more layers to create a "filled" effect (THICC mode)
+      for (int j = 0; j < 40; j++) {
         float radiusOffset = 0.001f + j * 0.0003f;
+
+        // Create gradient: darker at base, brighter at top
+        float t = (float)j / 40.0f;
+        Color layerColor = drawColor;
+
+        // Darken the inner layers for depth effect
+        float brightness = 0.6f + 0.4f * t;  // Range from 60% to 100%
+        layerColor.r = (uint8_t)(drawColor.r * brightness);
+        layerColor.g = (uint8_t)(drawColor.g * brightness);
+        layerColor.b = (uint8_t)(drawColor.b * brightness);
+
         drawCountryOutline(country, GLOBE_RADIUS + radiusOffset,
-                           COUNTRY_SCALE_FACTOR, drawColor);
+                           COUNTRY_SCALE_FACTOR, layerColor);
       }
       }
 
-      rlEnableDepthTest();  // Re-enable depth test
+      // Depth test stays enabled throughout
+      // rlEnableDepthTest();
     }
 
     rlPopMatrix();  // Restore previous transform
@@ -413,11 +612,26 @@ int main(void) {
     DrawText("GLOBLE GAME", uiMargin, uiMargin, 30, DARKBLUE);
     DrawText("Guess the mystery country!", uiMargin, uiMargin + 35, 16, GRAY);
 
-    // Distance mode display (only show if not in mode selection)
-    if (!modeSelectionActive) {
+    // Distance mode and timer display (only show if not in mode selection)
+    if (!modeSelectionActive && game.mysteryCountry != NULL) {
       const char *modeNames[] = {"Centroid", "Border-to-Border"};
       DrawText(TextFormat("Mode: %s", modeNames[game.currentDistanceMode]),
                uiMargin, uiMargin + 55, 14, DARKGRAY);
+
+      // Show timer (only when game is active)
+      if (!game.won) {
+        double currentTime = GetTime() - game.startTime;
+        int minutes = (int)(currentTime / 60.0);
+        int seconds = (int)currentTime % 60;
+        DrawText(TextFormat("Time: %d:%02d", minutes, seconds),
+                 uiMargin, uiMargin + 75, 14, DARKGRAY);
+      } else {
+        // Show final time when won
+        int minutes = (int)(game.elapsedTime / 60.0);
+        int seconds = (int)game.elapsedTime % 60;
+        DrawText(TextFormat("Time: %d:%02d", minutes, seconds),
+                 uiMargin, uiMargin + 75, 14, DARKGREEN);
+      }
     }
 
     // Mode selection screen
@@ -465,10 +679,10 @@ int main(void) {
 
     // Instructions
     if (!game.searchActive && game.guessCount == 0 && !modeSelectionActive) {
-      DrawText("Press ENTER to guess", uiMargin, uiMargin + 75, 16, DARKGRAY);
-      DrawText("Drag mouse or use arrow keys", uiMargin, uiMargin + 95, 16,
+      DrawText("Press ENTER to guess", uiMargin, uiMargin + 100, 16, DARKGRAY);
+      DrawText("Drag mouse or use arrow keys", uiMargin, uiMargin + 120, 16,
                DARKGRAY);
-      DrawText("to rotate globe", uiMargin, uiMargin + 115, 16, DARKGRAY);
+      DrawText("to rotate globe", uiMargin, uiMargin + 140, 16, DARKGRAY);
     }
 
     // Search box
@@ -552,7 +766,7 @@ int main(void) {
     // Win message
     if (game.won && game.mysteryCountry != NULL) {
       int msgWidth = 400;
-      int msgHeight = 190;
+      int msgHeight = 230;
       int msgX = (SCREEN_WIDTH - msgWidth) / 2;
       int msgY = (SCREEN_HEIGHT - msgHeight) / 2;
 
@@ -562,16 +776,27 @@ int main(void) {
       DrawText("CONGRATULATIONS!", msgX + 60, msgY + 30, 28, GREEN);
       DrawText(TextFormat("You found %s!", game.mysteryCountry->englishName),
                msgX + 40, msgY + 70, 18, DARKGREEN);
-      DrawText(TextFormat("in %d guesses", game.guessCount), msgX + 130,
+      DrawText(TextFormat("Guesses: %d", game.guessCount), msgX + 130,
                msgY + 95, 18, DARKGREEN);
-      DrawText("Hold 'R' to restart", msgX + 110, msgY + 130, 18, DARKGRAY);
+
+      // Display time
+      int minutes = (int)(game.elapsedTime / 60.0);
+      int seconds = (int)game.elapsedTime % 60;
+      DrawText(TextFormat("Time: %d:%02d", minutes, seconds), msgX + 130,
+               msgY + 115, 18, DARKGREEN);
+
+      // Display score
+      DrawText(TextFormat("SCORE: %d / 10000", game.finalScore), msgX + 90,
+               msgY + 145, 20, DARKBLUE);
+
+      DrawText("Hold 'R' to restart", msgX + 110, msgY + 170, 18, DARKGRAY);
 
       // Progress bar for restart hold
       if (restartHoldTime > 0.0f) {
         int barWidth = 300;
         int barHeight = 20;
         int barX = msgX + (msgWidth - barWidth) / 2;
-        int barY = msgY + 155;
+        int barY = msgY + 195;
         float progress = restartHoldTime / RESTART_HOLD_DURATION;
 
         DrawRectangle(barX, barY, barWidth, barHeight, LIGHTGRAY);
