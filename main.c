@@ -200,7 +200,7 @@ int main(void) {
   // Initialize game
   GameState game;
   initGame(&game, db);
-  selectRandomMysteryCountry(&game);
+  // Mystery country will be selected after mode selection
 
   // Setup 3D camera
   Camera3D camera = {0};
@@ -224,27 +224,59 @@ int main(void) {
 
   // Globe rotation
   Matrix M0 = MatrixRotateX(DEG2RAD * 270.0f);
-  float spinX = 0.0f;
-  float spinY = 0.0f;
+  float spinX = 0.0f;  // User rotation around X-axis
+  float spinY = 0.0f;  // User rotation around Y-axis
+  float autoSpin = 0.0f;  // Auto-rotation (separate from user control)
 
   // Search results
   CountryData *searchResults[20];
   int searchResultCount = 0;
   int selectedSearchResult = 0;
 
+  // Restart hold tracking
+  float restartHoldTime = 0.0f;
+  const float RESTART_HOLD_DURATION = 1.5f; // Seconds to hold R
+
+  // Mode selection state
+  bool modeSelectionActive = true;
+  int selectedMode = 1; // Default to Border-to-Border (index 1)
+
   // Main game loop
   while (!WindowShouldClose()) {
-    // Auto-rotate globe slowly
-    spinX += 0.001f;
+    // Auto-rotation always increments (in local space)
+    autoSpin += 0.001f;
 
-    // Handle input
-    if (IsKeyDown(KEY_LEFT)) spinY -= 0.02f;
-    if (IsKeyDown(KEY_RIGHT)) spinY += 0.02f;
-    if (IsKeyDown(KEY_UP)) spinX += 0.02f;
-    if (IsKeyDown(KEY_DOWN)) spinX -= 0.02f;
+    // Mouse drag rotation
+    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+      Vector2 mouseDelta = GetMouseDelta();
+      spinY += mouseDelta.x * 0.005f;  // Horizontal drag rotates around Y-axis
+      spinX += mouseDelta.y * 0.005f;  // Vertical drag rotates around X-axis
+    }
 
-    // Toggle search mode
-    if (IsKeyPressed(KEY_ENTER) && !game.searchActive) {
+    // Handle keyboard input for globe rotation
+    if (!modeSelectionActive) {
+      if (IsKeyDown(KEY_LEFT)) spinY -= 0.02f;
+      if (IsKeyDown(KEY_RIGHT)) spinY += 0.02f;
+      if (IsKeyDown(KEY_UP)) spinX += 0.02f;
+      if (IsKeyDown(KEY_DOWN)) spinX -= 0.02f;
+    }
+
+    // Mode selection input
+    if (modeSelectionActive) {
+      if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_DOWN)) {
+        selectedMode = (selectedMode + 1) % DISTANCE_MODE_COUNT;
+      }
+      if (IsKeyPressed(KEY_ENTER)) {
+        game.currentDistanceMode = (DistanceMode)selectedMode;
+        modeSelectionActive = false;
+        selectRandomMysteryCountry(&game);  // Select mystery country after mode choice
+        const char *modeNames[] = {"Centroid", "Border-to-Border"};
+        printf("Distance mode selected: %s\n", modeNames[game.currentDistanceMode]);
+      }
+    }
+
+    // Toggle search mode (only when not in mode selection)
+    if (IsKeyPressed(KEY_ENTER) && !game.searchActive && !modeSelectionActive) {
       game.searchActive = true;
       game.searchTextLength = 0;
       game.searchText[0] = '\0';
@@ -252,8 +284,8 @@ int main(void) {
       selectedSearchResult = 0;
     }
 
-    // Handle search input
-    if (game.searchActive) {
+    // Handle search input (only when game is started, not in mode selection)
+    if (game.searchActive && !modeSelectionActive) {
       // Get character input
       int key = GetCharPressed();
       while (key > 0) {
@@ -295,13 +327,21 @@ int main(void) {
         game.searchText[0] = '\0';
         searchResultCount = 0;
       }
+    }
 
-      // Cancel search
-      if (IsKeyPressed(KEY_ESCAPE)) {
-        game.searchActive = false;
-        game.searchTextLength = 0;
-        game.searchText[0] = '\0';
-        searchResultCount = 0;
+    // Restart game with long press 'R' key (hold for 1.5 seconds)
+    if (game.won) {
+      if (IsKeyDown(KEY_R)) {
+        restartHoldTime += GetFrameTime();
+        if (restartHoldTime >= RESTART_HOLD_DURATION) {
+          // Reset game state and return to mode selection
+          initGame(&game, db);
+          modeSelectionActive = true;
+          selectedMode = 1; // Reset to default Border-to-Border
+          restartHoldTime = 0.0f;
+        }
+      } else {
+        restartHoldTime = 0.0f; // Reset if key released
       }
     }
 
@@ -312,10 +352,15 @@ int main(void) {
     // Draw 3D globe
     BeginMode3D(camera);
 
-    // Apply rotation
-    Matrix M1 = MatrixRotateZ(spinX);
-    Matrix M2 = MatrixRotateY(spinY);
-    Matrix M = MatrixMultiply(MatrixMultiply(M0, M1), M2);
+    // Apply rotation: base orientation * user rotation * auto-rotation (local)
+    Matrix M_user_x = MatrixRotateZ(spinX);
+    Matrix M_user_y = MatrixRotateY(spinY);
+    Matrix M_auto = MatrixRotateY(autoSpin);  // Auto-rotation in local space
+
+    // Compose: M0 (base) * M_user_x * M_user_y * M_auto (local spin)
+    Matrix M_temp = MatrixMultiply(M0, M_user_x);
+    M_temp = MatrixMultiply(M_temp, M_user_y);
+    Matrix M = MatrixMultiply(M_temp, M_auto);
     globe.transform = M;
 
     // Draw globe
@@ -325,11 +370,12 @@ int main(void) {
     rlPushMatrix();
     rlMultMatrixf(MatrixToFloat(M));
 
-    // Draw guessed countries
-    // Disable depth test temporarily so countries always render on top
-    rlDisableDepthTest();
+    // Draw guessed countries (only if game is started)
+    if (!modeSelectionActive && game.mysteryCountry != NULL) {
+      // Disable depth test temporarily so countries always render on top
+      rlDisableDepthTest();
 
-    for (int i = 0; i < game.guessCount; i++) {
+      for (int i = 0; i < game.guessCount; i++) {
       Color drawColor = game.guesses[i].color;
 
       // Make closest guess brighter
@@ -341,17 +387,19 @@ int main(void) {
 
       CountryData *country = game.guesses[i].country;
 
-      // Draw multiple thick outline layers to make country borders very visible
+      // Draw multiple outline layers to make country borders visible
+      // Flattened to sit closer to the Earth's surface
       // This approach works correctly for both single polygons and multipolygons
       // (e.g., India with mainland + islands)
       for (int j = 0; j < 12; j++) {
-        float radiusOffset = 0.04f + j * 0.004f;
+        float radiusOffset = 0.001f + j * 0.0003f;
         drawCountryOutline(country, GLOBE_RADIUS + radiusOffset,
                            COUNTRY_SCALE_FACTOR, drawColor);
       }
-    }
+      }
 
-    rlEnableDepthTest();  // Re-enable depth test
+      rlEnableDepthTest();  // Re-enable depth test
+    }
 
     rlPopMatrix();  // Restore previous transform
 
@@ -365,11 +413,62 @@ int main(void) {
     DrawText("GLOBLE GAME", uiMargin, uiMargin, 30, DARKBLUE);
     DrawText("Guess the mystery country!", uiMargin, uiMargin + 35, 16, GRAY);
 
+    // Distance mode display (only show if not in mode selection)
+    if (!modeSelectionActive) {
+      const char *modeNames[] = {"Centroid", "Border-to-Border"};
+      DrawText(TextFormat("Mode: %s", modeNames[game.currentDistanceMode]),
+               uiMargin, uiMargin + 55, 14, DARKGRAY);
+    }
+
+    // Mode selection screen
+    if (modeSelectionActive) {
+      int boxWidth = 500;
+      int boxHeight = 300;
+      int boxX = (SCREEN_WIDTH - boxWidth) / 2;
+      int boxY = (SCREEN_HEIGHT - boxHeight) / 2;
+
+      // Semi-transparent background overlay
+      DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (Color){0, 0, 0, 150});
+
+      // Mode selection box
+      DrawRectangle(boxX, boxY, boxWidth, boxHeight, WHITE);
+      DrawRectangleLines(boxX, boxY, boxWidth, boxHeight, DARKBLUE);
+
+      // Title
+      DrawText("SELECT DISTANCE MODE", boxX + 80, boxY + 20, 24, DARKBLUE);
+
+      // Mode options
+      const char *modeNames[] = {"Centroid", "Border-to-Border"};
+      const char *modeDescriptions[] = {
+        "Distance from country center to center",
+        "Distance from closest borders"
+      };
+
+      for (int i = 0; i < DISTANCE_MODE_COUNT; i++) {
+        int optionY = boxY + 80 + i * 80;
+        Color bgColor = (i == selectedMode) ? SKYBLUE : LIGHTGRAY;
+        Color textColor = (i == selectedMode) ? WHITE : BLACK;
+
+        // Option box
+        DrawRectangle(boxX + 30, optionY, boxWidth - 60, 60, bgColor);
+        DrawRectangleLines(boxX + 30, optionY, boxWidth - 60, 60, DARKGRAY);
+
+        // Mode name
+        DrawText(modeNames[i], boxX + 40, optionY + 10, 20, textColor);
+        // Mode description
+        DrawText(modeDescriptions[i], boxX + 40, optionY + 35, 14, textColor);
+      }
+
+      // Instructions
+      DrawText("Use UP/DOWN to select, ENTER to confirm", boxX + 70, boxY + 260, 16, DARKGRAY);
+    }
+
     // Instructions
-    if (!game.searchActive && game.guessCount == 0) {
-      DrawText("Press ENTER to guess", uiMargin, uiMargin + 60, 16, DARKGRAY);
-      DrawText("Arrow keys to rotate globe", uiMargin, uiMargin + 80, 16,
+    if (!game.searchActive && game.guessCount == 0 && !modeSelectionActive) {
+      DrawText("Press ENTER to guess", uiMargin, uiMargin + 75, 16, DARKGRAY);
+      DrawText("Drag mouse or use arrow keys", uiMargin, uiMargin + 95, 16,
                DARKGRAY);
+      DrawText("to rotate globe", uiMargin, uiMargin + 115, 16, DARKGRAY);
     }
 
     // Search box
@@ -396,17 +495,36 @@ int main(void) {
       DrawText("Press ENTER for next guess", uiMargin, 110, 16, DARKGRAY);
     }
 
-    // Guess history (right side)
-    int historyX = SCREEN_WIDTH - uiWidth - uiMargin;
-    int historyY = uiMargin;
+    // Guess history (right side) - sorted by distance (only show if game started)
+    if (!modeSelectionActive && game.mysteryCountry != NULL) {
+      int historyX = SCREEN_WIDTH - uiWidth - uiMargin;
+      int historyY = uiMargin;
 
-    DrawText("GUESSES", historyX, historyY, 20, DARKBLUE);
-    DrawText(TextFormat("Total: %d", game.guessCount), historyX,
-             historyY + 25, 16, GRAY);
+      DrawText("GUESSES", historyX, historyY, 20, DARKBLUE);
+      DrawText(TextFormat("Total: %d", game.guessCount), historyX,
+               historyY + 25, 16, GRAY);
+
+    // Create sorted index array (sort by distance, ascending)
+    int sortedIndices[MAX_GUESSES];
+    for (int i = 0; i < game.guessCount; i++) {
+      sortedIndices[i] = i;
+    }
+
+    // Simple selection sort by distance
+    for (int i = 0; i < game.guessCount - 1; i++) {
+      for (int j = i + 1; j < game.guessCount; j++) {
+        if (game.guesses[sortedIndices[j]].distance <
+            game.guesses[sortedIndices[i]].distance) {
+          int temp = sortedIndices[i];
+          sortedIndices[i] = sortedIndices[j];
+          sortedIndices[j] = temp;
+        }
+      }
+    }
 
     int displayCount = game.guessCount > 15 ? 15 : game.guessCount;
     for (int i = 0; i < displayCount; i++) {
-      int idx = game.guessCount - 1 - i; // Show most recent first
+      int idx = sortedIndices[i]; // Show sorted by distance (closest first)
       int yPos = historyY + 50 + i * 40;
 
       // Background
@@ -428,12 +546,13 @@ int main(void) {
       if (idx == game.closestGuessIndex && !game.won) {
         DrawText("CLOSEST", historyX + uiWidth - 60, yPos + 10, 12, DARKBLUE);
       }
+      }
     }
 
     // Win message
-    if (game.won) {
+    if (game.won && game.mysteryCountry != NULL) {
       int msgWidth = 400;
-      int msgHeight = 150;
+      int msgHeight = 190;
       int msgX = (SCREEN_WIDTH - msgWidth) / 2;
       int msgY = (SCREEN_HEIGHT - msgHeight) / 2;
 
@@ -445,6 +564,20 @@ int main(void) {
                msgX + 40, msgY + 70, 18, DARKGREEN);
       DrawText(TextFormat("in %d guesses", game.guessCount), msgX + 130,
                msgY + 95, 18, DARKGREEN);
+      DrawText("Hold 'R' to restart", msgX + 110, msgY + 130, 18, DARKGRAY);
+
+      // Progress bar for restart hold
+      if (restartHoldTime > 0.0f) {
+        int barWidth = 300;
+        int barHeight = 20;
+        int barX = msgX + (msgWidth - barWidth) / 2;
+        int barY = msgY + 155;
+        float progress = restartHoldTime / RESTART_HOLD_DURATION;
+
+        DrawRectangle(barX, barY, barWidth, barHeight, LIGHTGRAY);
+        DrawRectangle(barX, barY, (int)(barWidth * progress), barHeight, GREEN);
+        DrawRectangleLines(barX, barY, barWidth, barHeight, DARKGRAY);
+      }
     }
 
     EndDrawing();

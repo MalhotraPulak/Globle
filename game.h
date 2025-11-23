@@ -8,6 +8,13 @@
 
 #define MAX_GUESSES 500
 
+// Distance calculation modes
+typedef enum {
+  DISTANCE_MODE_CENTROID,
+  DISTANCE_MODE_BORDER_TO_BORDER,
+  DISTANCE_MODE_COUNT  // Keep track of number of modes
+} DistanceMode;
+
 // Single guess in the game
 typedef struct {
   CountryData *country;
@@ -26,10 +33,14 @@ typedef struct {
   char searchText[100];  // Text being typed for search
   int searchTextLength;
   bool searchActive;
+  DistanceMode currentDistanceMode;  // Current distance calculation mode
 } GameState;
 
 // Distance calculation (haversine formula)
 float calculateDistance(GeoPoint p1, GeoPoint p2);
+
+// Border-to-border distance calculation
+float calculateBorderToBorderDistance(CountryData *c1, CountryData *c2);
 
 // Color calculation based on distance
 Color getColorForDistance(float distance, float maxDistance);

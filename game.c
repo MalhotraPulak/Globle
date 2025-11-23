@@ -26,6 +26,107 @@ float calculateDistance(GeoPoint p1, GeoPoint p2) {
   return distance;
 }
 
+// Calculate minimum distance from a point to a line segment on a sphere
+float distanceToSegment(GeoPoint point, GeoPoint segStart, GeoPoint segEnd) {
+  // For simplicity, we'll sample points along the segment and find minimum distance
+  // This is an approximation but works well for border detection
+  float minDist = calculateDistance(point, segStart);
+  float endDist = calculateDistance(point, segEnd);
+  if (endDist < minDist) minDist = endDist;
+
+  // Sample 20 points along the segment for better accuracy
+  for (int i = 1; i < 20; i++) {
+    float t = i / 20.0f;
+    GeoPoint samplePoint;
+    samplePoint.lat = segStart.lat + t * (segEnd.lat - segStart.lat);
+    samplePoint.lon = segStart.lon + t * (segEnd.lon - segStart.lon);
+
+    float dist = calculateDistance(point, samplePoint);
+    if (dist < minDist) {
+      minDist = dist;
+    }
+  }
+
+  return minDist;
+}
+
+// Helper: One-directional border distance
+// Finds minimum distance from points in c1 to segments in c2
+static float minDistanceOneDirection(CountryData *c1, CountryData *c2) {
+  float minDistance = 1000000.0f;  // Very large initial value
+
+  // Check distance from each point in c1 to each segment in c2
+  for (uint64_t i = 0; i < c1->polygons->size; i++) {
+    Polygon **poly1Ptr = (Polygon **)c1->polygons->p + i;
+    Polygon *poly1 = *poly1Ptr;
+    if (!poly1 || !poly1->points) continue;
+
+    // For each point in polygon 1
+    for (uint64_t j = 0; j < poly1->points->size; j++) {
+      GeoPoint *p1 = (GeoPoint *)poly1->points->p + j;
+
+      // Check against all segments in country 2
+      for (uint64_t k = 0; k < c2->polygons->size; k++) {
+        Polygon **poly2Ptr = (Polygon **)c2->polygons->p + k;
+        Polygon *poly2 = *poly2Ptr;
+        if (!poly2 || !poly2->points || poly2->points->size < 2) continue;
+
+        // Check distance to each segment in polygon 2
+        for (uint64_t l = 0; l < poly2->points->size - 1; l++) {
+          GeoPoint *seg1 = (GeoPoint *)poly2->points->p + l;
+          GeoPoint *seg2 = (GeoPoint *)poly2->points->p + l + 1;
+
+          float dist = distanceToSegment(*p1, *seg1, *seg2);
+          if (dist < minDistance) {
+            minDistance = dist;
+
+            // Early exit: if we find points within 5km, that's close enough
+            if (minDistance < 5.0f) {
+              return minDistance;
+            }
+          }
+        }
+
+        // Check closing segment
+        if (poly2->points->size > 2) {
+          GeoPoint *first = (GeoPoint *)poly2->points->p;
+          GeoPoint *last = (GeoPoint *)poly2->points->p + (poly2->points->size - 1);
+          float dist = distanceToSegment(*p1, *last, *first);
+          if (dist < minDistance) {
+            minDistance = dist;
+            if (minDistance < 5.0f) {
+              return minDistance;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return minDistance;
+}
+
+// Border-to-border distance calculation (bidirectional)
+// Finds minimum distance between borders of two countries
+float calculateBorderToBorderDistance(CountryData *c1, CountryData *c2) {
+  if (!c1 || !c2 || !c1->polygons || !c2->polygons) {
+    return 0.0f;
+  }
+
+  // Check both directions to ensure we find shared borders
+  float dist1 = minDistanceOneDirection(c1, c2);  // c1 points to c2 segments
+
+  // Early exit if already found very close
+  if (dist1 < 5.0f) {
+    return dist1;
+  }
+
+  float dist2 = minDistanceOneDirection(c2, c1);  // c2 points to c1 segments
+
+  // Return minimum of both directions
+  return (dist1 < dist2) ? dist1 : dist2;
+}
+
 // Color gradient: white -> blue -> yellow -> orange -> red -> green (for correct)
 Color getColorForDistance(float distance, float maxDistance) {
   if (distance < 1.0f) {
@@ -96,6 +197,7 @@ void initGame(GameState *game, CountryDatabase *db) {
   game->closestGuessIndex = -1;
   game->searchTextLength = 0;
   game->searchActive = false;
+  game->currentDistanceMode = DISTANCE_MODE_BORDER_TO_BORDER;  // Default to border-to-border mode
   memset(game->searchText, 0, sizeof(game->searchText));
   memset(game->guesses, 0, sizeof(game->guesses));
 }
@@ -156,9 +258,18 @@ bool makeGuess(GameState *game, CountryData *country) {
     return false;
   }
 
-  // Calculate distance
-  float distance = calculateDistance(country->centroid,
-                                    game->mysteryCountry->centroid);
+  // Calculate distance based on current mode
+  float distance;
+  switch (game->currentDistanceMode) {
+    case DISTANCE_MODE_BORDER_TO_BORDER:
+      distance = calculateBorderToBorderDistance(country, game->mysteryCountry);
+      break;
+    case DISTANCE_MODE_CENTROID:
+    default:
+      distance = calculateDistance(country->centroid,
+                                   game->mysteryCountry->centroid);
+      break;
+  }
 
   // Maximum possible distance on Earth is ~20,000 km (half circumference)
   float maxDistance = 20000.0f;
