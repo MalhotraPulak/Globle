@@ -58,7 +58,8 @@ emcc -o "$OUTPUT_DIR/$OUTPUT_FILE" \
   --preload-file coordinates \
   --preload-file earth2.jpg \
   --shell-file "$RAYLIB_PATH/src/minshell.html" \
-  -DPLATFORM_WEB
+  -DPLATFORM_WEB \
+  -sGL_ENABLE_GET_PROC_ADDRESS
 
 echo ""
 echo "✅ Build complete!"
