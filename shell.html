@@ -84,15 +84,6 @@
       var progressElement = document.getElementById('progress-bar');
       var canvasElement = document.getElementById('canvas');
 
-      // Set canvas size to match window
-      function resizeCanvas() {
-        canvasElement.width = window.innerWidth;
-        canvasElement.height = window.innerHeight;
-      }
-
-      window.addEventListener('resize', resizeCanvas);
-      resizeCanvas();
-
       var Module = {
         preRun: [],
         postRun: [],
