@@ -57,7 +57,7 @@ emcc -o "$OUTPUT_DIR/$OUTPUT_FILE" \
   -s ALLOW_MEMORY_GROWTH=1 \
   --preload-file coordinates \
   --preload-file earth2.jpg \
-  --shell-file "$RAYLIB_PATH/src/minshell.html" \
+  --shell-file shell.html \
   -DPLATFORM_WEB \
   -sGL_ENABLE_GET_PROC_ADDRESS
 

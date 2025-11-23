@@ -13,13 +13,8 @@
   #include <emscripten/html5.h>
 #endif
 
-#ifdef PLATFORM_WEB
-  #define SCREEN_WIDTH 0  // 0 = use canvas size from HTML
-  #define SCREEN_HEIGHT 0
-#else
-  #define SCREEN_WIDTH 1200
-  #define SCREEN_HEIGHT 800
-#endif
+#define SCREEN_WIDTH 1920
+#define SCREEN_HEIGHT 1080
 #define GLOBE_RADIUS 1.5f
 #define COUNTRY_SCALE_FACTOR 1.0f  // No scaling - render at exact geographic size
 
