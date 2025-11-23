@@ -289,6 +289,26 @@ void drawCountryPolygonOutline(Polygon *poly, GeoPoint countryCenter,
   DrawLine3D(vLast, vFirst, color);
 }
 
+// Project screen coordinates to virtual sphere for arcball rotation
+Vector3 screenToSphere(Vector2 screenPos, int screenWidth, int screenHeight) {
+  // Normalize to [-1, 1] range
+  float x = (2.0f * screenPos.x / screenWidth - 1.0f);
+  float y = -(2.0f * screenPos.y / screenHeight - 1.0f);  // Flip Y (screen is top-down)
+
+  float r = 1.0f;  // Virtual sphere radius
+  float d_squared = x*x + y*y;
+  float z;
+
+  // Piecewise projection: sphere inside, hyperbolic sheet outside
+  if (d_squared <= r*r / 2.0f) {
+    z = sqrtf(r*r - d_squared);
+  } else {
+    z = (r*r / 2.0f) / sqrtf(d_squared);
+  }
+
+  return Vector3Normalize((Vector3){x, y, z});
+}
+
 // Draw a country with all its polygons (filled)
 void drawCountryFilled(CountryData *country, float radius, float scaleFactor,
                        Color color) {
@@ -400,11 +420,13 @@ int main(void) {
   Model globe = LoadModelFromMesh(sphere);
   globe.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = earthTex;
 
-  // Globe rotation
+  // Globe rotation - store the complete transformation matrix
   Matrix M0 = MatrixRotateX(DEG2RAD * 270.0f);
-  float spinX = 0.0f;  // User rotation around X-axis
-  float spinY = 0.0f;  // User rotation around Y-axis
-  float autoSpin = 0.0f;  // Auto-rotation (separate from user control)
+  Matrix globeTransform = M0;  // Current globe orientation
+
+  // Arcball rotation state
+  bool isDragging = false;
+  Vector3 lastSpherePoint = {0};
 
   // Search results
   CountryData *searchResults[20];
@@ -421,9 +443,6 @@ int main(void) {
 
   // Main game loop
   while (!WindowShouldClose()) {
-    // Auto-rotation always increments (in local space)
-    autoSpin += 0.001f;
-
     // Mouse wheel zoom (works with trackpad pinch on macOS)
     float wheelMove = GetMouseWheelMove();
     if (wheelMove != 0) {
@@ -433,19 +452,58 @@ int main(void) {
       if (cameraDistance > 10.0f) cameraDistance = 10.0f;
     }
 
-    // Mouse drag rotation
-    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-      Vector2 mouseDelta = GetMouseDelta();
-      spinY += mouseDelta.x * 0.005f;  // Horizontal drag rotates around Y-axis
-      spinX += mouseDelta.y * 0.005f;  // Vertical drag rotates around X-axis
+    // Arcball rotation - project mouse to virtual sphere
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+      isDragging = true;
+      Vector2 mousePos = GetMousePosition();
+      lastSpherePoint = screenToSphere(mousePos, SCREEN_WIDTH, SCREEN_HEIGHT);
+    }
+
+    if (isDragging && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+      Vector2 currentMousePos = GetMousePosition();
+      Vector3 currentSpherePoint = screenToSphere(currentMousePos, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+      // Compute rotation axis (perpendicular to both sphere points)
+      Vector3 axis = Vector3CrossProduct(lastSpherePoint, currentSpherePoint);
+      float axisLength = Vector3Length(axis);
+
+      if (axisLength > 0.001f) {  // Avoid division by zero
+        axis = Vector3Scale(axis, 1.0f / axisLength);  // Normalize
+
+        // Rotation angle from arc length (small angle approximation)
+        float angle = asinf(axisLength);
+
+        // Create rotation matrix and apply in camera space
+        Matrix rotation = MatrixRotate(axis, angle);
+        globeTransform = MatrixMultiply(rotation, globeTransform);
+
+        // Update for next frame
+        lastSpherePoint = currentSpherePoint;
+      }
+    }
+
+    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+      isDragging = false;
     }
 
     // Handle keyboard input for globe rotation
     if (!modeSelectionActive) {
-      if (IsKeyDown(KEY_LEFT)) spinY -= 0.02f;
-      if (IsKeyDown(KEY_RIGHT)) spinY += 0.02f;
-      if (IsKeyDown(KEY_UP)) spinX += 0.02f;
-      if (IsKeyDown(KEY_DOWN)) spinX -= 0.02f;
+      if (IsKeyDown(KEY_LEFT)) {
+        Matrix rot = MatrixRotateY(-0.02f);
+        globeTransform = MatrixMultiply(globeTransform, rot);
+      }
+      if (IsKeyDown(KEY_RIGHT)) {
+        Matrix rot = MatrixRotateY(0.02f);
+        globeTransform = MatrixMultiply(globeTransform, rot);
+      }
+      if (IsKeyDown(KEY_UP)) {
+        Matrix rot = MatrixRotateX(0.02f);
+        globeTransform = MatrixMultiply(globeTransform, rot);
+      }
+      if (IsKeyDown(KEY_DOWN)) {
+        Matrix rot = MatrixRotateX(-0.02f);
+        globeTransform = MatrixMultiply(globeTransform, rot);
+      }
     }
 
     // Mode selection input
@@ -550,23 +608,15 @@ int main(void) {
     // Draw 3D globe
     BeginMode3D(camera);
 
-    // Apply rotation: base orientation * user rotation * auto-rotation (local)
-    Matrix M_user_x = MatrixRotateZ(spinX);
-    Matrix M_user_y = MatrixRotateY(spinY);
-    Matrix M_auto = MatrixRotateY(autoSpin);  // Auto-rotation in local space
-
-    // Compose: M0 (base) * M_user_x * M_user_y * M_auto (local spin)
-    Matrix M_temp = MatrixMultiply(M0, M_user_x);
-    M_temp = MatrixMultiply(M_temp, M_user_y);
-    Matrix M = MatrixMultiply(M_temp, M_auto);
-    globe.transform = M;
+    // Apply the current globe transform
+    globe.transform = globeTransform;
 
     // Draw globe
     DrawModel(globe, (Vector3){0, 0, 0}, 1.0f, WHITE);
 
     // Apply the same rotation transform for country rendering
     rlPushMatrix();
-    rlMultMatrixf(MatrixToFloat(M));
+    rlMultMatrixf(MatrixToFloat(globeTransform));
 
     // Draw guessed countries (only if game is started)
     if (!modeSelectionActive && game.mysteryCountry != NULL) {
