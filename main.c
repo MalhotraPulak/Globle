@@ -355,6 +355,16 @@ int main(void) {
   InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Globle Game - Guess the Country!");
   SetTargetFPS(60);
 
+  // Load a better quality font from the default font but at higher resolution
+  // This creates a smoother font texture
+  Font customFont = LoadFontEx("", 72, 0, 250);
+  if (customFont.texture.id == 0) {
+    // Fallback: Generate font from default with anti-aliasing
+    customFont = GetFontDefault();
+  }
+  GenTextureMipmaps(&customFont.texture);
+  SetTextureFilter(customFont.texture, TEXTURE_FILTER_BILINEAR);
+
   // Load country database
   printf("Loading country database...\n");
   CountryDatabase *db = loadCountryDatabase("./coordinates/ccc.csv");
@@ -614,28 +624,28 @@ int main(void) {
     const int uiWidth = 300;
 
     // Title
-    DrawText("GLOBLE GAME", uiMargin, uiMargin, 30, DARKBLUE);
-    DrawText("Guess the mystery country!", uiMargin, uiMargin + 35, 16, GRAY);
+    DrawTextEx(customFont, "GLOBLE GAME", (Vector2){uiMargin, uiMargin}, 48, 1.0f, DARKBLUE);
+    DrawTextEx(customFont, "Guess the mystery country!", (Vector2){uiMargin, uiMargin + 55}, 28, 1.0f, GRAY);
 
     // Distance mode and timer display (only show if not in mode selection)
     if (!modeSelectionActive && game.mysteryCountry != NULL) {
       const char *modeNames[] = {"Centroid", "Border-to-Border"};
-      DrawText(TextFormat("Mode: %s", modeNames[game.currentDistanceMode]),
-               uiMargin, uiMargin + 55, 14, DARKGRAY);
+      DrawTextEx(customFont, TextFormat("Mode: %s", modeNames[game.currentDistanceMode]),
+               (Vector2){uiMargin, uiMargin + 90}, 24, 1.0f, DARKGRAY);
 
       // Show timer (only when game is active)
       if (!game.won) {
         double currentTime = GetTime() - game.startTime;
         int minutes = (int)(currentTime / 60.0);
         int seconds = (int)currentTime % 60;
-        DrawText(TextFormat("Time: %d:%02d", minutes, seconds),
-                 uiMargin, uiMargin + 75, 14, DARKGRAY);
+        DrawTextEx(customFont, TextFormat("Time: %d:%02d", minutes, seconds),
+                 (Vector2){uiMargin, uiMargin + 120}, 24, 1.0f, DARKGRAY);
       } else {
         // Show final time when won
         int minutes = (int)(game.elapsedTime / 60.0);
         int seconds = (int)game.elapsedTime % 60;
-        DrawText(TextFormat("Time: %d:%02d", minutes, seconds),
-                 uiMargin, uiMargin + 75, 14, DARKGREEN);
+        DrawTextEx(customFont, TextFormat("Time: %d:%02d", minutes, seconds),
+                 (Vector2){uiMargin, uiMargin + 120}, 24, 1.0f, DARKGREEN);
       }
     }
 
@@ -654,7 +664,7 @@ int main(void) {
       DrawRectangleLines(boxX, boxY, boxWidth, boxHeight, DARKBLUE);
 
       // Title
-      DrawText("SELECT DISTANCE MODE", boxX + 80, boxY + 20, 24, DARKBLUE);
+      DrawTextEx(customFont, "SELECT DISTANCE MODE", (Vector2){boxX + 80, boxY + 20}, 34, 1.0f, DARKBLUE);
 
       // Mode options
       const char *modeNames[] = {"Centroid", "Border-to-Border"};
@@ -673,45 +683,45 @@ int main(void) {
         DrawRectangleLines(boxX + 30, optionY, boxWidth - 60, 60, DARKGRAY);
 
         // Mode name
-        DrawText(modeNames[i], boxX + 40, optionY + 10, 20, textColor);
+        DrawTextEx(customFont, modeNames[i], (Vector2){boxX + 40, optionY + 10}, 28, 1.0f, textColor);
         // Mode description
-        DrawText(modeDescriptions[i], boxX + 40, optionY + 35, 14, textColor);
+        DrawTextEx(customFont, modeDescriptions[i], (Vector2){boxX + 40, optionY + 35}, 20, 1.0f, textColor);
       }
 
       // Instructions
-      DrawText("Use UP/DOWN to select, ENTER to confirm", boxX + 70, boxY + 260, 16, DARKGRAY);
+      DrawTextEx(customFont, "Use UP/DOWN to select, ENTER to confirm", (Vector2){boxX + 70, boxY + 260}, 22, 1.0f, DARKGRAY);
     }
 
     // Instructions
     if (!game.searchActive && game.guessCount == 0 && !modeSelectionActive) {
-      DrawText("Press ENTER to guess", uiMargin, uiMargin + 100, 16, DARKGRAY);
-      DrawText("Drag mouse or use arrow keys", uiMargin, uiMargin + 120, 16,
+      DrawTextEx(customFont, "Press ENTER to guess", (Vector2){uiMargin, uiMargin + 160}, 24, 1.0f, DARKGRAY);
+      DrawTextEx(customFont, "Drag mouse or use arrow keys", (Vector2){uiMargin, uiMargin + 190}, 24, 1.0f,
                DARKGRAY);
-      DrawText("to rotate globe", uiMargin, uiMargin + 140, 16, DARKGRAY);
+      DrawTextEx(customFont, "to rotate globe", (Vector2){uiMargin, uiMargin + 220}, 24, 1.0f, DARKGRAY);
     }
 
     // Search box
     if (game.searchActive) {
-      DrawRectangle(uiMargin, 100, uiWidth, 40, WHITE);
-      DrawRectangleLines(uiMargin, 100, uiWidth, 40, BLUE);
-      DrawText(game.searchText, uiMargin + 10, 110, 20, BLACK);
-      DrawText("Type country name (ESC to cancel)", uiMargin, 145, 14, GRAY);
+      DrawRectangle(uiMargin, 160, uiWidth, 55, WHITE);
+      DrawRectangleLines(uiMargin, 160, uiWidth, 55, BLUE);
+      DrawTextEx(customFont, game.searchText, (Vector2){uiMargin + 10, 170}, 28, 1.0f, BLACK);
+      DrawTextEx(customFont, "Type country name (ESC to cancel)", (Vector2){uiMargin, 220}, 20, 1.0f, GRAY);
 
       // Search results dropdown
       if (searchResultCount > 0) {
-        int dropdownHeight = searchResultCount * 25 + 10;
-        DrawRectangle(uiMargin, 150, uiWidth, dropdownHeight, WHITE);
-        DrawRectangleLines(uiMargin, 150, uiWidth, dropdownHeight, DARKGRAY);
+        int dropdownHeight = searchResultCount * 40 + 10;
+        DrawRectangle(uiMargin, 250, uiWidth, dropdownHeight, WHITE);
+        DrawRectangleLines(uiMargin, 250, uiWidth, dropdownHeight, DARKGRAY);
 
         for (int i = 0; i < searchResultCount; i++) {
           Color bgColor = (i == selectedSearchResult) ? LIGHTGRAY : WHITE;
-          DrawRectangle(uiMargin + 5, 155 + i * 25, uiWidth - 10, 23, bgColor);
-          DrawText(searchResults[i]->englishName, uiMargin + 10,
-                   158 + i * 25, 16, BLACK);
+          DrawRectangle(uiMargin + 5, 255 + i * 40, uiWidth - 10, 38, bgColor);
+          DrawTextEx(customFont, searchResults[i]->englishName, (Vector2){uiMargin + 10, 260 + i * 40},
+                   24, 1.0f, BLACK);
         }
       }
     } else if (game.guessCount > 0) {
-      DrawText("Press ENTER for next guess", uiMargin, 110, 16, DARKGRAY);
+      DrawTextEx(customFont, "Press ENTER for next guess", (Vector2){uiMargin, 165}, 24, 1.0f, DARKGRAY);
     }
 
     // Guess history (right side) - sorted by distance (only show if game started)
@@ -719,9 +729,9 @@ int main(void) {
       int historyX = SCREEN_WIDTH - uiWidth - uiMargin;
       int historyY = uiMargin;
 
-      DrawText("GUESSES", historyX, historyY, 20, DARKBLUE);
-      DrawText(TextFormat("Total: %d", game.guessCount), historyX,
-               historyY + 25, 16, GRAY);
+      DrawTextEx(customFont, "GUESSES", (Vector2){historyX, historyY}, 32, 1.0f, DARKBLUE);
+      DrawTextEx(customFont, TextFormat("Total: %d", game.guessCount), (Vector2){historyX, historyY + 40},
+               24, 1.0f, GRAY);
 
     // Create sorted index array (sort by distance, ascending)
     int sortedIndices[MAX_GUESSES];
@@ -741,60 +751,60 @@ int main(void) {
       }
     }
 
-    int displayCount = game.guessCount > 15 ? 15 : game.guessCount;
+    int displayCount = game.guessCount > 12 ? 12 : game.guessCount;
     for (int i = 0; i < displayCount; i++) {
       int idx = sortedIndices[i]; // Show sorted by distance (closest first)
-      int yPos = historyY + 50 + i * 40;
+      int yPos = historyY + 75 + i * 48;
 
       // Background
-      DrawRectangle(historyX, yPos, uiWidth, 35, game.guesses[idx].color);
+      DrawRectangle(historyX, yPos, uiWidth, 45, game.guesses[idx].color);
 
       // Country name
       const char *name = game.guesses[idx].country->englishName;
-      DrawText(name, historyX + 5, yPos + 3, 14, BLACK);
+      DrawTextEx(customFont, name, (Vector2){historyX + 5, yPos + 3}, 20, 1.0f, BLACK);
 
       // Distance
       if (game.guesses[idx].distance < 1.0f) {
-        DrawText("CORRECT!", historyX + 5, yPos + 18, 12, DARKGREEN);
+        DrawTextEx(customFont, "CORRECT!", (Vector2){historyX + 5, yPos + 26}, 18, 1.0f, DARKGREEN);
       } else {
-        DrawText(TextFormat("%.0f km", game.guesses[idx].distance),
-                 historyX + 5, yPos + 18, 12, BLACK);
+        DrawTextEx(customFont, TextFormat("%.0f km", game.guesses[idx].distance),
+                 (Vector2){historyX + 5, yPos + 26}, 18, 1.0f, BLACK);
       }
 
       // Closest marker
       if (idx == game.closestGuessIndex && !game.won) {
-        DrawText("CLOSEST", historyX + uiWidth - 60, yPos + 10, 12, DARKBLUE);
+        DrawTextEx(customFont, "CLOSEST", (Vector2){historyX + uiWidth - 85, yPos + 13}, 18, 1.0f, DARKBLUE);
       }
       }
     }
 
     // Win message
     if (game.won && game.mysteryCountry != NULL) {
-      int msgWidth = 400;
-      int msgHeight = 230;
+      int msgWidth = 450;
+      int msgHeight = 260;
       int msgX = (SCREEN_WIDTH - msgWidth) / 2;
       int msgY = (SCREEN_HEIGHT - msgHeight) / 2;
 
       DrawRectangle(msgX, msgY, msgWidth, msgHeight, Fade(WHITE, 0.95f));
       DrawRectangleLines(msgX, msgY, msgWidth, msgHeight, GREEN);
 
-      DrawText("CONGRATULATIONS!", msgX + 60, msgY + 30, 28, GREEN);
-      DrawText(TextFormat("You found %s!", game.mysteryCountry->englishName),
-               msgX + 40, msgY + 70, 18, DARKGREEN);
-      DrawText(TextFormat("Guesses: %d", game.guessCount), msgX + 130,
-               msgY + 95, 18, DARKGREEN);
+      DrawTextEx(customFont, "CONGRATULATIONS!", (Vector2){msgX + 65, msgY + 25}, 42, 1.0f, GREEN);
+      DrawTextEx(customFont, TextFormat("You found %s!", game.mysteryCountry->englishName),
+               (Vector2){msgX + 45, msgY + 80}, 26, 1.0f, DARKGREEN);
+      DrawTextEx(customFont, TextFormat("Guesses: %d", game.guessCount), (Vector2){msgX + 155, msgY + 115},
+               26, 1.0f, DARKGREEN);
 
       // Display time
       int minutes = (int)(game.elapsedTime / 60.0);
       int seconds = (int)game.elapsedTime % 60;
-      DrawText(TextFormat("Time: %d:%02d", minutes, seconds), msgX + 130,
-               msgY + 115, 18, DARKGREEN);
+      DrawTextEx(customFont, TextFormat("Time: %d:%02d", minutes, seconds), (Vector2){msgX + 155, msgY + 145},
+               26, 1.0f, DARKGREEN);
 
       // Display score
-      DrawText(TextFormat("SCORE: %d / 10000", game.finalScore), msgX + 90,
-               msgY + 145, 20, DARKBLUE);
+      DrawTextEx(customFont, TextFormat("SCORE: %d / 10000", game.finalScore), (Vector2){msgX + 100, msgY + 180},
+               30, 1.0f, DARKBLUE);
 
-      DrawText("Hold 'R' to restart", msgX + 110, msgY + 170, 18, DARKGRAY);
+      DrawTextEx(customFont, "Hold 'R' to restart", (Vector2){msgX + 120, msgY + 220}, 24, 1.0f, DARKGRAY);
 
       // Progress bar for restart hold
       if (restartHoldTime > 0.0f) {
@@ -814,6 +824,7 @@ int main(void) {
   }
 
   // Cleanup
+  UnloadFont(customFont);
   UnloadTexture(earthTex);
   UnloadModel(globe);
   freeCountryDatabase(db);
