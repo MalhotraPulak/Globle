@@ -33,14 +33,12 @@ jobs:
         emcc --version
         which emcc
 
-    - name: Clone Raylib if not present
+    - name: Clone Raylib
       run: |
-        if [ ! -d "raylib" ]; then
-          echo "Cloning Raylib..."
-          git clone --depth 1 https://github.com/raysan5/raylib.git
-        else
-          echo "Raylib already present"
-        fi
+        echo "Cloning Raylib..."
+        git clone --depth 1 https://github.com/raysan5/raylib.git
+        echo "Raylib cloned successfully"
+        ls -la raylib/
 
     - name: Build Raylib for Web
       run: |
