@@ -289,25 +289,6 @@ void drawCountryPolygonOutline(Polygon *poly, GeoPoint countryCenter,
   DrawLine3D(vLast, vFirst, color);
 }
 
-// Project screen coordinates to virtual sphere for arcball rotation
-Vector3 screenToSphere(Vector2 screenPos, int screenWidth, int screenHeight) {
-  // Normalize to [-1, 1] range
-  float x = (2.0f * screenPos.x / screenWidth - 1.0f);
-  float y = -(2.0f * screenPos.y / screenHeight - 1.0f);  // Flip Y (screen is top-down)
-
-  float r = 1.0f;  // Virtual sphere radius
-  float d_squared = x*x + y*y;
-  float z;
-
-  // Piecewise projection: sphere inside, hyperbolic sheet outside
-  if (d_squared <= r*r / 2.0f) {
-    z = sqrtf(r*r - d_squared);
-  } else {
-    z = (r*r / 2.0f) / sqrtf(d_squared);
-  }
-
-  return Vector3Normalize((Vector3){x, y, z});
-}
 
 // Draw a country with all its polygons (filled)
 void drawCountryFilled(CountryData *country, float radius, float scaleFactor,
@@ -424,10 +405,6 @@ int main(void) {
   Matrix M0 = MatrixRotateX(DEG2RAD * 270.0f);
   Matrix globeTransform = M0;  // Current globe orientation
 
-  // Arcball rotation state
-  bool isDragging = false;
-  Vector3 lastSpherePoint = {0};
-
   // Search results
   CountryData *searchResults[20];
   int searchResultCount = 0;
@@ -446,44 +423,28 @@ int main(void) {
     // Mouse wheel zoom (works with trackpad pinch on macOS)
     float wheelMove = GetMouseWheelMove();
     if (wheelMove != 0) {
-      cameraDistance -= wheelMove * 0.5f;  // Zoom in/out
+      cameraDistance -= wheelMove * 0.2f;  // Zoom in/out
       // Clamp camera distance (min 2.0, max 10.0)
       if (cameraDistance < 2.0f) cameraDistance = 2.0f;
       if (cameraDistance > 10.0f) cameraDistance = 10.0f;
     }
 
-    // Arcball rotation - project mouse to virtual sphere
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-      isDragging = true;
-      Vector2 mousePos = GetMousePosition();
-      lastSpherePoint = screenToSphere(mousePos, SCREEN_WIDTH, SCREEN_HEIGHT);
-    }
+    // Simple mouse drag rotation
+    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+      Vector2 mouseDelta = GetMouseDelta();
 
-    if (isDragging && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-      Vector2 currentMousePos = GetMousePosition();
-      Vector3 currentSpherePoint = screenToSphere(currentMousePos, SCREEN_WIDTH, SCREEN_HEIGHT);
+      if (mouseDelta.x != 0 || mouseDelta.y != 0) {
+        // Apply rotations in camera space (apply before current transform)
+        // Horizontal drag rotates around Z-axis (vertical on screen)
+        Matrix rotZ = MatrixRotateZ(mouseDelta.x * 0.005f);
 
-      // Compute rotation axis (perpendicular to both sphere points)
-      Vector3 axis = Vector3CrossProduct(lastSpherePoint, currentSpherePoint);
-      float axisLength = Vector3Length(axis);
+        // Vertical drag rotates around Y-axis (left-right on screen)
+        Matrix rotY = MatrixRotateY(-mouseDelta.y * 0.005f);
 
-      if (axisLength > 0.001f) {  // Avoid division by zero
-        axis = Vector3Scale(axis, 1.0f / axisLength);  // Normalize
-
-        // Rotation angle from arc length (small angle approximation)
-        float angle = asinf(axisLength);
-
-        // Create rotation matrix and apply in camera space
-        Matrix rotation = MatrixRotate(axis, angle);
+        // Combine rotations and apply to globe
+        Matrix rotation = MatrixMultiply(rotZ, rotY);
         globeTransform = MatrixMultiply(rotation, globeTransform);
-
-        // Update for next frame
-        lastSpherePoint = currentSpherePoint;
       }
-    }
-
-    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
-      isDragging = false;
     }
 
     // Handle keyboard input for globe rotation
@@ -521,13 +482,22 @@ int main(void) {
       }
     }
 
-    // Toggle search mode (only when not in mode selection)
-    if (IsKeyPressed(KEY_ENTER) && !game.searchActive && !modeSelectionActive) {
-      game.searchActive = true;
-      game.searchTextLength = 0;
-      game.searchText[0] = '\0';
-      searchResultCount = 0;
-      selectedSearchResult = 0;
+    // Auto-activate search when typing (only when not in mode selection)
+    if (!modeSelectionActive && !game.searchActive) {
+      int key = GetCharPressed();
+      if (key >= 32 && key <= 125) {
+        game.searchActive = true;
+        game.searchTextLength = 0;
+        game.searchText[0] = '\0';
+        searchResultCount = 0;
+        selectedSearchResult = 0;
+
+        // Add the first character
+        game.searchText[game.searchTextLength++] = (char)key;
+        game.searchText[game.searchTextLength] = '\0';
+        searchResultCount = filterCountries(db, game.searchText,
+                                           searchResults, 20);
+      }
     }
 
     // Handle search input (only when game is started, not in mode selection)
@@ -554,6 +524,14 @@ int main(void) {
         searchResultCount = filterCountries(db, game.searchText,
                                            searchResults, 20);
         selectedSearchResult = 0;
+      }
+
+      // ESC to cancel search
+      if (IsKeyPressed(KEY_ESCAPE)) {
+        game.searchActive = false;
+        game.searchTextLength = 0;
+        game.searchText[0] = '\0';
+        searchResultCount = 0;
       }
 
       // Navigate search results
