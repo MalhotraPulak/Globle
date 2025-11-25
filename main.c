@@ -748,8 +748,6 @@ int main(void) {
                    24, 1.0f, BLACK);
         }
       }
-    } else if (game.guessCount > 0) {
-      DrawTextEx(customFont, "Press ENTER for next guess", (Vector2){uiMargin, 165}, 24, 1.0f, DARKGRAY);
     }
 
     // Guess history (right side) - sorted by distance (only show if game started)
