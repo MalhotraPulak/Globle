@@ -722,7 +722,7 @@ int main(void) {
 
     // Instructions
     if (!game.searchActive && game.guessCount == 0 && !modeSelectionActive) {
-      DrawTextEx(customFont, "Press ENTER to guess", (Vector2){uiMargin, uiMargin + 160}, 24, 1.0f, DARKGRAY);
+      DrawTextEx(customFont, "Start typing to guess", (Vector2){uiMargin, uiMargin + 160}, 24, 1.0f, DARKGRAY);
       DrawTextEx(customFont, "Drag mouse or use arrow keys", (Vector2){uiMargin, uiMargin + 190}, 24, 1.0f,
                DARKGRAY);
       DrawTextEx(customFont, "to rotate globe", (Vector2){uiMargin, uiMargin + 220}, 24, 1.0f, DARKGRAY);
@@ -841,6 +841,7 @@ int main(void) {
         int barX = msgX + (msgWidth - barWidth) / 2;
         int barY = msgY + 195;
         float progress = restartHoldTime / RESTART_HOLD_DURATION;
+        if (progress > 1.0f) progress = 1.0f;  // Clamp to 100%
 
         DrawRectangle(barX, barY, barWidth, barHeight, LIGHTGRAY);
         DrawRectangle(barX, barY, (int)(barWidth * progress), barHeight, GREEN);

@@ -101,7 +101,7 @@
           Module.setStatus.last.text = text;
           if (m) {
             text = m[1];
-            progressElement.style.width = (parseInt(m[2])/parseInt(m[4])*100) + '%';
+            progressElement.style.width = Math.min(100, (parseInt(m[2])/parseInt(m[4])*100)) + '%';
           } else {
             progressElement.style.width = '0%';
           }
