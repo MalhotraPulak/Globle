@@ -58,25 +58,46 @@ static char *readColumn(int *start, char *fileData) {
   // Increased buffer size to handle large geoshape data (Indonesia has ~400KB!)
   char *b = malloc(500000);  // Increased to handle Indonesia's massive geoshape
   int idx = 0;
-  int inQuotes = 0;
+  int fieldStartsWithQuote = 0;
+
+  // Check if field starts with a quote
+  if (fileData[*start] == '"') {
+    fieldStartsWithQuote = 1;
+    (*start)++;  // Skip opening quote
+  }
 
   while (fileData[*start] != '\0') {
     char c = fileData[*start];
 
-    if (c == '"') {
-      inQuotes = !inQuotes;  // Toggle quote state
+    // If field was quoted and we hit a quote
+    if (fieldStartsWithQuote && c == '"') {
+      // Check if it's an escaped quote ("")
+      if (fileData[(*start) + 1] == '"') {
+        // It's an escaped quote - write a single quote to output
+        b[idx++] = '"';
+        (*start) += 2;  // Skip both quotes
+        continue;
+      } else {
+        // It's the closing quote
+        (*start)++;  // Skip the closing quote
+        break;
+      }
     }
 
-    // Stop at field delimiter (;) or newline, but only if not inside quotes
-    if (!inQuotes && (c == ';' || c == '\n')) {
+    // For unquoted fields or inside quoted fields, stop at delimiter
+    if (!fieldStartsWithQuote && (c == ';' || c == '\n')) {
       break;
     }
 
     b[idx++] = fileData[(*start)++];
   }
 
+  // Skip the field delimiter (semicolon or newline)
+  if (fileData[*start] == ';' || fileData[*start] == '\n') {
+    (*start)++;
+  }
+
   b[idx] = '\0';
-  (*start)++;  // Skip the delimiter
   return b;
 }
 
@@ -148,7 +169,8 @@ static Polygon *parsePolygon(char *shape, char **endptr) {
 }
 
 static void parseGeoShape(char *shape, CountryData *d) {
-  const char *prefix = "\"{\"\"coordinates\"\": ";
+  // After CSV unescaping, the format is: {"coordinates": ...}
+  const char *prefix = "{\"coordinates\": ";
   int len = strlen(prefix);
   shape += len;
 
@@ -156,7 +178,8 @@ static void parseGeoShape(char *shape, CountryData *d) {
 
   while (*shape != '\0') {
     // Look for the start of a polygon: [[[ (but not [[[[)
-    while (*shape != '\0') {
+    int found_polygon_start = 0;
+    while (*shape != '\0' && !found_polygon_start) {
       if (*shape == '"') {
         // Reached end of geoshape data
         return;
@@ -164,19 +187,22 @@ static void parseGeoShape(char *shape, CountryData *d) {
 
       if (*shape == '[' && shape[1] == '[' && shape[2] == '[') {
         if (shape[3] == '[') {
-          // This is [[[[, skip all 4 brackets
+          // This is [[[[, which means we're in a MultiPolygon
+          // Skip all 4 brackets - we're now at the first polygon's coordinates
           shape += 4;
-          continue;
+          // The first polygon starts immediately (no [[[ marker for it)
+          found_polygon_start = 1;
         } else {
           // This is [[[, found a polygon start
-          break;
+          found_polygon_start = 1;
         }
+      } else {
+        shape++;
       }
-
-      shape++;
     }
 
     if (*shape == '\0') break;
+    if (!found_polygon_start) break;
 
     char *endptr;
     Polygon *p = parsePolygon(shape, &endptr);
