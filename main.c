@@ -18,6 +18,39 @@
 #define GLOBE_RADIUS 1.5f
 #define COUNTRY_SCALE_FACTOR 1.0f  // No scaling - render at exact geographic size
 
+// Ray-sphere intersection for arcball rotation
+// Returns true if ray intersects sphere, and sets hitPoint to intersection point
+// Ray is defined by origin and direction, sphere is at world origin with given radius
+bool raySphereIntersect(Vector3 rayOrigin, Vector3 rayDir, float sphereRadius, Vector3 *hitPoint) {
+  // Sphere is centered at origin
+  // Solve: |rayOrigin + t*rayDir|^2 = radius^2
+  // Expanding: t^2*|dir|^2 + 2*t*(origin·dir) + |origin|^2 - radius^2 = 0
+
+  float a = Vector3DotProduct(rayDir, rayDir);
+  float b = 2.0f * Vector3DotProduct(rayOrigin, rayDir);
+  float c = Vector3DotProduct(rayOrigin, rayOrigin) - sphereRadius * sphereRadius;
+
+  float discriminant = b * b - 4.0f * a * c;
+
+  if (discriminant < 0) {
+    return false;  // No intersection
+  }
+
+  // Take the closer intersection (smaller t)
+  float t = (-b - sqrtf(discriminant)) / (2.0f * a);
+
+  if (t < 0) {
+    // If closer intersection is behind camera, try the farther one
+    t = (-b + sqrtf(discriminant)) / (2.0f * a);
+    if (t < 0) {
+      return false;  // Both intersections behind camera
+    }
+  }
+
+  *hitPoint = Vector3Add(rayOrigin, Vector3Scale(rayDir, t));
+  return true;
+}
+
 // Convert lat/lon to 3D point on sphere
 // Must match par_shapes coordinate system used by GenMeshSphere
 Vector3 latLonToSphere(float lat, float lon, float radius) {
@@ -318,10 +351,22 @@ void drawCountryOutline(CountryData *country, float radius, float scaleFactor,
   }
 }
 
-// Filter countries by search text
+// Match info for sorting search results
+typedef struct {
+  CountryData *country;
+  int score;  // Higher is better: prefix match > word start > substring position
+} SearchMatch;
+
+// Compare function for sorting matches (higher score first)
+int compareSearchMatches(const void *a, const void *b) {
+  SearchMatch *ma = (SearchMatch *)a;
+  SearchMatch *mb = (SearchMatch *)b;
+  return mb->score - ma->score;  // Descending order
+}
+
+// Filter countries by search text with smart ranking
 int filterCountries(CountryDatabase *db, const char *searchText,
                     CountryData **results, int maxResults) {
-  int count = 0;
   int searchLen = strlen(searchText);
 
   if (searchLen == 0) {
@@ -335,7 +380,11 @@ int filterCountries(CountryDatabase *db, const char *searchText,
   }
   lowerSearch[searchLen] = '\0';
 
-  for (uint64_t i = 0; i < db->count && count < maxResults; i++) {
+  // Collect all matches with scores
+  SearchMatch matches[500];  // Max matches to consider
+  int matchCount = 0;
+
+  for (uint64_t i = 0; i < db->count && matchCount < 500; i++) {
     char lowerName[200];
     int nameLen = strlen(db->countries[i].englishName);
     for (int j = 0; j < nameLen && j < 199; j++) {
@@ -343,12 +392,47 @@ int filterCountries(CountryDatabase *db, const char *searchText,
     }
     lowerName[nameLen] = '\0';
 
-    if (strstr(lowerName, lowerSearch) != NULL) {
-      results[count++] = &db->countries[i];
+    char *matchPos = strstr(lowerName, lowerSearch);
+    if (matchPos != NULL) {
+      int position = matchPos - lowerName;
+      int score = 0;
+
+      // Scoring system:
+      // - Exact match: 10000
+      // - Prefix match (starts with search): 5000 + bonus for shorter names
+      // - Word boundary match (space before match): 2000 - position
+      // - Substring match: 1000 - position (earlier is better)
+
+      if (nameLen == searchLen) {
+        // Exact match
+        score = 10000;
+      } else if (position == 0) {
+        // Prefix match - bonus for names closer in length to search
+        score = 5000 + (100 - nameLen);  // Shorter names rank higher
+      } else if (position > 0 && lowerName[position - 1] == ' ') {
+        // Word boundary match (e.g., "India" in "British Indian Ocean Territory")
+        score = 2000 - position;
+      } else {
+        // Substring match somewhere in the middle
+        score = 1000 - position;
+      }
+
+      matches[matchCount].country = &db->countries[i];
+      matches[matchCount].score = score;
+      matchCount++;
     }
   }
 
-  return count;
+  // Sort matches by score (highest first)
+  qsort(matches, matchCount, sizeof(SearchMatch), compareSearchMatches);
+
+  // Copy top results
+  int resultCount = matchCount < maxResults ? matchCount : maxResults;
+  for (int i = 0; i < resultCount; i++) {
+    results[i] = matches[i].country;
+  }
+
+  return resultCount;
 }
 
 int main(void) {
@@ -405,14 +489,16 @@ int main(void) {
   Matrix M0 = MatrixRotateX(DEG2RAD * 270.0f);
   Matrix globeTransform = M0;  // Current globe orientation
 
+  // Arcball rotation state
+  bool isDragging = false;
+  Vector3 dragStartDir = {0};   // u0: initial contact direction from sphere center
+  Matrix dragStartTransform = MatrixIdentity();  // R0: globe orientation when drag started
+
   // Search results
   CountryData *searchResults[20];
   int searchResultCount = 0;
   int selectedSearchResult = 0;
 
-  // Restart hold tracking
-  float restartHoldTime = 0.0f;
-  const float RESTART_HOLD_DURATION = 1.5f; // Seconds to hold R
 
   // Mode selection state
   bool modeSelectionActive = true;
@@ -429,43 +515,63 @@ int main(void) {
       if (cameraDistance > 10.0f) cameraDistance = 10.0f;
     }
 
-    // Simple mouse drag rotation
-    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-      Vector2 mouseDelta = GetMouseDelta();
+    // Arcball rotation system
+    // On mouse press: cast ray, find sphere intersection, store initial state
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+      Vector2 mousePos = GetMousePosition();
+      Ray mouseRay = GetScreenToWorldRay(mousePos, camera);
 
-      if (mouseDelta.x != 0 || mouseDelta.y != 0) {
-        // Apply rotations in camera space (apply before current transform)
-        // Horizontal drag rotates around Z-axis (vertical on screen)
-        Matrix rotZ = MatrixRotateZ(mouseDelta.x * 0.005f);
-
-        // Vertical drag rotates around Y-axis (left-right on screen)
-        Matrix rotY = MatrixRotateY(-mouseDelta.y * 0.005f);
-
-        // Combine rotations and apply to globe
-        Matrix rotation = MatrixMultiply(rotZ, rotY);
-        globeTransform = MatrixMultiply(rotation, globeTransform);
+      Vector3 hitPoint;
+      if (raySphereIntersect(mouseRay.position, mouseRay.direction, GLOBE_RADIUS, &hitPoint)) {
+        isDragging = true;
+        dragStartDir = Vector3Normalize(hitPoint);  // u0: direction in world space
+        dragStartTransform = globeTransform;         // R0: save current orientation
       }
     }
 
-    // Handle keyboard input for globe rotation
-    if (!modeSelectionActive) {
-      if (IsKeyDown(KEY_LEFT)) {
-        Matrix rot = MatrixRotateY(-0.02f);
-        globeTransform = MatrixMultiply(globeTransform, rot);
+    // On mouse drag: compute rotation from u0 to u1
+    if (isDragging && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+      Vector2 mousePos = GetMousePosition();
+      Ray mouseRay = GetScreenToWorldRay(mousePos, camera);
+
+      Vector3 hitPoint;
+      if (raySphereIntersect(mouseRay.position, mouseRay.direction, GLOBE_RADIUS, &hitPoint)) {
+        Vector3 currentDir = Vector3Normalize(hitPoint);  // u1: current direction
+
+        // Compute rotation from dragStartDir (u0) to currentDir (u1)
+        float dot = Vector3DotProduct(dragStartDir, currentDir);
+        // Clamp dot product to avoid NaN from acos
+        if (dot > 1.0f) dot = 1.0f;
+        if (dot < -1.0f) dot = -1.0f;
+
+        float angle = acosf(dot);
+
+        if (angle > 0.0001f) {
+          // Rotation axis: cross(u0, u1) gives axis perpendicular to both
+          // This rotates FROM u0 TO u1
+          Vector3 axis = Vector3CrossProduct(dragStartDir, currentDir);
+          float axisLen = Vector3Length(axis);
+
+          if (axisLen > 0.0001f) {
+            axis = Vector3Scale(axis, 1.0f / axisLen);  // Normalize
+
+            // Build rotation matrix Q that rotates u0 toward u1
+            Matrix Q = MatrixRotate(axis, angle);
+
+            // New orientation: R = R0 * Q
+            // Post-multiply: apply Q in the rotated frame of R0
+            globeTransform = MatrixMultiply(dragStartTransform, Q);
+          }
+        }
       }
-      if (IsKeyDown(KEY_RIGHT)) {
-        Matrix rot = MatrixRotateY(0.02f);
-        globeTransform = MatrixMultiply(globeTransform, rot);
-      }
-      if (IsKeyDown(KEY_UP)) {
-        Matrix rot = MatrixRotateX(0.02f);
-        globeTransform = MatrixMultiply(globeTransform, rot);
-      }
-      if (IsKeyDown(KEY_DOWN)) {
-        Matrix rot = MatrixRotateX(-0.02f);
-        globeTransform = MatrixMultiply(globeTransform, rot);
-      }
+      // If mouse moves off sphere, keep the last valid transform (don't update)
     }
+
+    // On mouse release: end dragging
+    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+      isDragging = false;
+    }
+
 
     // Mode selection input
     if (modeSelectionActive) {
@@ -526,12 +632,12 @@ int main(void) {
         selectedSearchResult = 0;
       }
 
-      // ESC to cancel search
+      // ESC to clear search text
       if (IsKeyPressed(KEY_ESCAPE)) {
-        game.searchActive = false;
         game.searchTextLength = 0;
         game.searchText[0] = '\0';
         searchResultCount = 0;
+        selectedSearchResult = 0;
       }
 
       // Navigate search results
@@ -560,20 +666,12 @@ int main(void) {
       }
     }
 
-    // Restart game with long press 'R' key (hold for 1.5 seconds)
-    if (game.won) {
-      if (IsKeyDown(KEY_R)) {
-        restartHoldTime += GetFrameTime();
-        if (restartHoldTime >= RESTART_HOLD_DURATION) {
-          // Reset game state and return to mode selection
-          initGame(&game, db);
-          modeSelectionActive = true;
-          selectedMode = 1; // Reset to default Border-to-Border
-          restartHoldTime = 0.0f;
-        }
-      } else {
-        restartHoldTime = 0.0f; // Reset if key released
-      }
+    // Restart game when ENTER is pressed on win screen
+    if (game.won && IsKeyPressed(KEY_ENTER)) {
+      // Reset game state and return to mode selection
+      initGame(&game, db);
+      modeSelectionActive = true;
+      selectedMode = 1; // Reset to default Border-to-Border
     }
 
     // Render
@@ -723,9 +821,7 @@ int main(void) {
     // Instructions
     if (!game.searchActive && game.guessCount == 0 && !modeSelectionActive) {
       DrawTextEx(customFont, "Start typing to guess", (Vector2){uiMargin, uiMargin + 160}, 24, 1.0f, DARKGRAY);
-      DrawTextEx(customFont, "Drag mouse or use arrow keys", (Vector2){uiMargin, uiMargin + 190}, 24, 1.0f,
-               DARKGRAY);
-      DrawTextEx(customFont, "to rotate globe", (Vector2){uiMargin, uiMargin + 220}, 24, 1.0f, DARKGRAY);
+      DrawTextEx(customFont, "Drag mouse to rotate globe", (Vector2){uiMargin, uiMargin + 190}, 24, 1.0f, DARKGRAY);
     }
 
     // Search box
@@ -733,7 +829,7 @@ int main(void) {
       DrawRectangle(uiMargin, 160, uiWidth, 55, WHITE);
       DrawRectangleLines(uiMargin, 160, uiWidth, 55, BLUE);
       DrawTextEx(customFont, game.searchText, (Vector2){uiMargin + 10, 170}, 28, 1.0f, BLACK);
-      DrawTextEx(customFont, "Type country name (ESC to cancel)", (Vector2){uiMargin, 220}, 20, 1.0f, GRAY);
+      DrawTextEx(customFont, "Type country name (ESC to clear)", (Vector2){uiMargin, 220}, 20, 1.0f, GRAY);
 
       // Search results dropdown
       if (searchResultCount > 0) {
@@ -830,21 +926,7 @@ int main(void) {
       DrawTextEx(customFont, TextFormat("SCORE: %d / 10000", game.finalScore), (Vector2){msgX + 100, msgY + 180},
                30, 1.0f, DARKBLUE);
 
-      DrawTextEx(customFont, "Hold 'R' to restart", (Vector2){msgX + 120, msgY + 220}, 24, 1.0f, DARKGRAY);
-
-      // Progress bar for restart hold
-      if (restartHoldTime > 0.0f) {
-        int barWidth = 300;
-        int barHeight = 20;
-        int barX = msgX + (msgWidth - barWidth) / 2;
-        int barY = msgY + 195;
-        float progress = restartHoldTime / RESTART_HOLD_DURATION;
-        if (progress > 1.0f) progress = 1.0f;  // Clamp to 100%
-
-        DrawRectangle(barX, barY, barWidth, barHeight, LIGHTGRAY);
-        DrawRectangle(barX, barY, (int)(barWidth * progress), barHeight, GREEN);
-        DrawRectangleLines(barX, barY, barWidth, barHeight, DARKGRAY);
-      }
+      DrawTextEx(customFont, "Press ENTER for next round", (Vector2){msgX + 85, msgY + 220}, 24, 1.0f, DARKGRAY);
     }
 
     EndDrawing();
